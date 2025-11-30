@@ -121,16 +121,81 @@ No code changes required!
 
 ## Additional Railway Configuration
 
-### Playwright Installation
+### Start Command
 
-Make sure your `Dockerfile` or Railway buildpack includes Playwright browser installation:
+**No custom start command needed!** Railway will automatically:
+1. Detect your `Dockerfile`
+2. Build the Docker image
+3. Use the `CMD` from the Dockerfile
 
+The Dockerfile is already configured to use Railway's dynamic `PORT` environment variable:
 ```dockerfile
-RUN playwright install chromium
-RUN playwright install-deps
+CMD uvicorn gmaps_scraper_server.main_api:app --host 0.0.0.0 --port ${PORT:-8001}
 ```
 
-This is already included in the project's Docker configuration.
+This means:
+- On Railway: Uses the `PORT` environment variable Railway provides
+- Locally: Falls back to port `8001`
+
+### Alternative: Custom Start Command (Optional)
+
+If you prefer not to use Docker, you can set a custom start command in Railway:
+
+1. Go to your service settings in Railway
+2. Find "Start Command" under "Settings" → "Deploy"
+3. Enter:
+   ```bash
+   uvicorn gmaps_scraper_server.main_api:app --host 0.0.0.0 --port $PORT
+   ```
+
+However, **using the Dockerfile is recommended** because it includes all Playwright dependencies.
+
+### Playwright Installation
+
+The `Dockerfile` already includes Playwright browser installation:
+
+```dockerfile
+RUN playwright install --with-deps
+```
+
+This installs Chromium and all required system dependencies. No additional configuration needed!
+
+---
+
+## Quick Deployment Checklist
+
+✅ **Before deploying to Railway:**
+
+1. **Commit your changes to Git:**
+   ```bash
+   git add .
+   git commit -m "Add environment variable support for proxy"
+   git push
+   ```
+
+2. **Connect Repository to Railway:**
+   - Go to Railway dashboard
+   - Click "New Project"
+   - Select "Deploy from GitHub repo"
+   - Choose this repository
+
+3. **Set Environment Variables:**
+   - Go to Variables tab
+   - Add `PROXY_SERVER`, `PROXY_USERNAME`, `PROXY_PASSWORD`
+
+4. **Deploy:**
+   - Railway will automatically build and deploy
+   - No custom start command needed!
+
+5. **Check Logs:**
+   - Look for "Using proxy: http://geo.iproyal.com:12321"
+   - Your app should be running!
+
+**That's it!** Railway will:
+- Detect the Dockerfile
+- Install all dependencies (including Playwright)
+- Use the PORT environment variable
+- Deploy your API
 
 ---
 

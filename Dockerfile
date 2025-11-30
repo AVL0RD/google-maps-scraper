@@ -34,9 +34,10 @@ RUN playwright install --with-deps
 # Copy the rest of the application code into the container at /app
 COPY . .
 
-# Expose the port the app runs on
+# Expose the port the app runs on (Railway will use PORT env var)
 EXPOSE 8001
 
 # Define the command to run the application
 # Use 0.0.0.0 to make it accessible from outside the container
-CMD ["uvicorn", "gmaps_scraper_server.main_api:app", "--host", "0.0.0.0", "--port", "8001"]
+# Railway provides PORT as an environment variable, default to 8001 for local
+CMD uvicorn gmaps_scraper_server.main_api:app --host 0.0.0.0 --port ${PORT:-8001}

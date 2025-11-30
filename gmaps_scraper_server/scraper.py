@@ -1,6 +1,7 @@
 import json
 import asyncio # Changed from time
 import re
+import os
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError # Changed to async
 from urllib.parse import urlencode
 
@@ -43,14 +44,33 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True): 
 
     async with async_playwright() as p: # Changed to async
         try:
-            browser = await p.chromium.launch(
-                headless=headless,
-                args=[
+            # Get proxy configuration from environment variables
+            proxy_server = os.getenv("PROXY_SERVER")
+            proxy_username = os.getenv("PROXY_USERNAME")
+            proxy_password = os.getenv("PROXY_PASSWORD")
+
+            # Build launch options
+            launch_options = {
+                "headless": headless,
+                "args": [
                     '--disable-dev-shm-usage',  # Use /tmp instead of /dev/shm for shared memory
                     '--no-sandbox',  # Required for running in Docker
                     '--disable-setuid-sandbox',
                 ]
-            ) # Added await
+            }
+
+            # Add proxy if credentials are provided
+            if proxy_server and proxy_username and proxy_password:
+                launch_options["proxy"] = {
+                    "server": proxy_server,
+                    "username": proxy_username,
+                    "password": proxy_password
+                }
+                print(f"Using proxy: {proxy_server}")
+            else:
+                print("No proxy configured - running without proxy")
+
+            browser = await p.chromium.launch(**launch_options) # Added await
             context = await browser.new_context( # Added await
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 java_script_enabled=True,
@@ -68,37 +88,106 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True): 
             search_url = create_search_url(query, lang)
             print(f"Navigating to search URL: {search_url}")
             await page.goto(search_url, wait_until='domcontentloaded') # Added await
-            await asyncio.sleep(2) # Changed to asyncio.sleep, added await
+            await asyncio.sleep(3) # Wait for potential redirects
 
             # --- Handle potential consent forms ---
-            # This is a common pattern, might need adjustment based on specific consent popups
-            try:
-                consent_button_xpath = "//button[.//span[contains(text(), 'Accept all') or contains(text(), 'Reject all')]]"
-                # Wait briefly for the button to potentially appear
-                await page.wait_for_selector(consent_button_xpath, state='visible', timeout=5000) # Added await
-                # Click the "Accept all" or equivalent button if found
-                # Example: Prioritize "Accept all"
-                accept_button = await page.query_selector("//button[.//span[contains(text(), 'Accept all')]]") # Added await
-                if accept_button:
-                    print("Accepting consent form...")
-                    await accept_button.click() # Added await
+            # Check if we're on a consent page (consent.google.com)
+            max_consent_attempts = 3
+            for attempt in range(max_consent_attempts):
+                if "consent.google.com" in page.url:
+                    print(f"Detected consent page (attempt {attempt + 1}/{max_consent_attempts})")
+                    try:
+                        # Wait for page to fully load
+                        await asyncio.sleep(2)
+                        
+                        # Find ALL buttons and try to click any that look like consent buttons
+                        button_clicked = False
+                        
+                        # Method 1: Try to find buttons by common text patterns
+                        button_text_patterns = [
+                            "Accept all", "accept all", "ACCEPT ALL",
+                            "Reject all", "reject all", "REJECT ALL",
+                            "Continue", "I agree"
+                        ]
+                        
+                        all_buttons = await page.locator("button").all()
+                        print(f"Found {len(all_buttons)} buttons on consent page")
+                        
+                        for button in all_buttons:
+                            try:
+                                if not await button.is_visible():
+                                    continue
+                                    
+                                button_text = await button.inner_text()
+                                button_text = button_text.strip()
+                                
+                                # Check if button text contains any of our patterns
+                                for pattern in button_text_patterns:
+                                    if pattern.lower() in button_text.lower():
+                                        print(f"Found consent button with text: '{button_text}' - clicking...")
+                                        await button.click()
+                                        button_clicked = True
+                                        break
+                                
+                                if button_clicked:
+                                    break
+                            except Exception as e:
+                                continue
+                        
+                        # Method 2: If no button found by text, try form submission buttons
+                        if not button_clicked:
+                            print("No button found by text, trying form submit buttons...")
+                            try:
+                                form_buttons = await page.locator("form[action*='consent'] button").all()
+                                if form_buttons:
+                                    visible_form_button = None
+                                    for fb in form_buttons:
+                                        if await fb.is_visible():
+                                            visible_form_button = fb
+                                            break
+                                    
+                                    if visible_form_button:
+                                        print("Clicking first visible form button...")
+                                        await visible_form_button.click()
+                                        button_clicked = True
+                            except Exception as e:
+                                print(f"Error trying form buttons: {e}")
+                        
+                        if button_clicked:
+                            print("Consent button clicked, waiting for navigation...")
+                            await asyncio.sleep(3)
+                            # Wait for navigation away from consent page
+                            try:
+                                await page.wait_for_url(lambda url: "consent.google.com" not in url, timeout=10000)
+                                print("Successfully navigated away from consent page")
+                            except PlaywrightTimeoutError:
+                                print("Still on consent page after clicking button, trying again...")
+                        else:
+                            print("No consent button found - saving page for debugging")
+                            try:
+                                await page.screenshot(path="consent_debug.png")
+                                print("Screenshot saved to consent_debug.png")
+                            except:
+                                pass
+                            break
+                    except Exception as e:
+                        print(f"Error handling consent form: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        break
                 else:
-                    # Fallback to clicking the first consent button found (might be reject)
-                    print("Clicking first available consent button...")
-                    await page.locator(consent_button_xpath).first.click() # Added await
-                # Wait for navigation/popup closure
-                await page.wait_for_load_state('networkidle', timeout=5000) # Added await
-            except PlaywrightTimeoutError:
-                print("No consent form detected or timed out waiting.")
-            except Exception as e:
-                print(f"Error handling consent form: {e}")
+                    # Not on consent page, break the loop
+                    break
+            
+            # Final wait for page to settle
+            await asyncio.sleep(3)
 
 
             # --- Scrolling and Link Extraction ---
             print("Scrolling to load places...")
             feed_selector = '[role="feed"]'
             try:
-                await page.wait_for_selector(feed_selector, state='visible', timeout=25000) # Added await
+                await page.wait_for_selector(feed_selector, state='visible', timeout=40000) # Increased timeout to 40s
             except PlaywrightTimeoutError:
                  # Check if it's a single result page (maps/place/)
                 if "/maps/place/" in page.url:
